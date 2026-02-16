@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>📚 Leitor PDF Mobile - Todos os PDFs</title>
+    <script src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(180deg, #0f0f23 0%, #1e1b4b 50%, #2d1b69 100%);
+            overscroll-behavior: none;
+        }
+        .book-card { 
+            background: linear-gradient(135deg, #ff6b6b, #feca57);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .book-card:active { transform: scale(0.97); }
+        .book-card:hover { transform: translateY(-4px); }
+        .pdf-canvas { max-height: 65vh; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+        .bottom-nav { backdrop-filter: blur(25px); background: rgba(15,15,35,0.98); }
+        .scan-btn { box-shadow: 0 10px 30px rgba(59,130,246,0.4); }
+        .loading { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .gradient-text { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text; background-clip: text;
+        }
+    </style>
+</head>
+<body class="text-white min-h-screen">
+    <div id="app"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+        function App() {
+            const [pdfFiles, setPdfFiles] = useState([]);
+            const [selectedPdf, setSelectedPdf] = useState(null);
+            const [currentPage, setCurrentPage] = useState(1);
+            const [totalPages, setTotalPages] = useState(1);
+            const [pdfDoc, setPdfDoc] = useState(null);
+            const [scanning, setScanning] = useState(false);
+            const [permissions, setPermissions] = useState(false);
+            const canvasRef = useRef(null);
+
+            // Escanear PDFs do celular
+            const scanDevicePDFs = useCallback(async () => {
+                setScanning(true);
+                try {
+                    // File System Access API (Android 13+ Chrome)
+                    if ('showOpenFilePicker' in window) {
+                        const [fileHandle] = await window.showOpenFilePicker({
+                            types: [{
+                                description: 'PDFs',
+                                accept: { 'application/pdf': ['.pdf'] },
+                            }],
+                            multiple: true,
+                        });
+                        
+                        const files = await Promise.all(fileHandle.map(async (handle) => {
+                            const file = await handle.getFile();
+                            const arrayBuffer = await file.arrayBuffer();
+                            return {
+                                name: file.name,
+                                size: (file.size / 1024 / 1024).toFixed(1) + 'MB',
+                                data: arrayBuffer,
+                                handle
+                            };
+                        }));
+                        
+                        setPdfFiles(files);
+                        setPermissions(true);
+                    } else {
+                        // Fallback: Input tradicional
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.multiple = true;
+                        input.accept = '.pdf';
+                        input.onchange = (e) => {
+                            const files = Array.from(e.target.files).map(file => ({
+                                name: file.name,
+                                size: (file.size / 1024 / 1024).toFixed(1) + 'MB',
+                                data: file
+                            }));
+                            setPdfFiles(files);
+                            setPermissions(true);
+                        };
+                        input.click();
+                    }
+                } catch (error) {
+                    alert('Permita acesso aos arquivos para escanear PDFs! 📂');
+                } finally {
+                    setScanning(false);
+                }
+            }, []);
+
+            const loadPdf = async (pdfData) => {
+                try {
+                    const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+                    const pdf = await loadingTask.promise;
+                    setPdfDoc(pdf);
+                    setTotalPages(pdf.numPages);
+                    setCurrentPage(1);
+                    setSelectedPdf(pdfData);
+                } catch (error) {
+                    alert('Erro ao carregar PDF');
+                }
+            };
+
+            const renderPage = async (pageNum) => {
+                if (!pdfDoc || !canvasRef.current) return;
+                
+                const page = await pdfDoc.getPage(pageNum);
+                const scale = Math.min(
+                    window.innerWidth * 0.92 / page.getViewport({scale: 1}).width,
+                    window.innerHeight * 0.6 / page.getViewport({scale: 1}).height
+                );
+                
+                const viewport = page.getViewport({scale});
+                const canvas = canvasRef.current;
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const context = canvas.getContext('2d');
+                await page.render({canvasContext: context, viewport}).promise;
+            };
+
+            useEffect(() => {
+                if (selectedPdf && pdfDoc) renderPage(currentPage);
+            }, [currentPage, pdfDoc, selectedPdf]);
+
+            const nextPage = () => currentPage < totalPages && setCurrentPage(p => p + 1);
+            const prevPage = () => currentPage > 1 && setCurrentPage(p => p - 1);
+
+            return (
+                <div className="min-h-screen">
+                    {/* Header */}
+                    <div className="px-6 pt-8 pb-6 bg-gradient-to-r from-purple-900/95 to-blue-900/95 backdrop-blur-xl border-b border-white/20 shadow-2xl">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h1 className="text-4xl font-black gradient-text drop-shadow-2xl mb-2">
+                                    📚 Leitor PDF
+                                </h1>
+                                <p className="text-blue-300 font-bold text-lg">
+                                    {pdfFiles.length} PDF{pdfFiles.length !== 1 ? 's' : ''} encontrado{pdfFiles.length !== 1 ? 's' : ''}
+                                </p>
+                            </div>
+                            <button
+                                onClick={scanDevicePDFs}
+                                disabled={scanning}
+                                className="scan-btn p-4 bg-gradient-to-r from-blue-500 to-purple-600 rounded-3xl shadow-2xl hover:scale-110 active:scale-95 disabled:opacity-50 transition-all font-bold text-lg"
+                            >
+                                {scanning ? (
+                                    <>
+                                        <i className="fas fa-spinner loading mr-2"></i>
+                                        Escaneando...
+                                    </>
+                                ) : (
+                                    <>
+                                        <i className="fas fa-search mr-2"></i>
+                                        Escanear
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Lista de PDFs */}
+                    <div className="px-6 pb-24">
+                        {pdfFiles.length === 0 ? (
+                            <div className="text-center mt-20">
+                                <i className="fas fa-file-pdf text-8xl text-gray-500 mb-8 block mx-auto animate-bounce"></i>
+                                <h2 className="text-3xl font-bold text-gray-300 mb-4">Nenhum PDF encontrado</h2>
+                                <p className="text-xl text-gray-500 mb-12">Toque em "Escanear" para encontrar todos os PDFs do seu celular</p>
+                                <div className="bg-gradient-to-r from-gray-800 to-gray-900 p-8 rounded-3xl border-4 border-dashed border-gray-600 max-w-md mx-auto">
+                                    <i className="fas fa-mobile-alt text-4xl text-blue-400 mb-4 block"></i>
+                                    <p className="text-lg font-semibold text-gray-300">Permita acesso aos arquivos</p>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {pdfFiles.map((pdf, index) => (
+                                    <div
+                                        key={index}
+                                        className="book-card rounded-3xl p-6 shadow-2xl border border-white/20 hover:shadow-3xl active:shadow-xl"
+                                        onClick={() => loadPdf(pdf.data)}
+                                    >
+                                        <div className="flex items-start justify-between mb-3">
+                                            <div>
+                                                <i className="fas fa-file-pdf text-4xl mr-4 float-left"></i>
+                                                <h3 className="font-bold text-xl mb-1">{pdf.name}</h3>
+                                                <p className="text-sm text-white/80">{pdf.size}</p>
+                                            </div>
+                                            <i className={`fas fa-chevron-right text-2xl ${selectedPdf === pdf.data ? 'text-blue-400' : 'text-white/60'}`}></i>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* PDF Viewer */}
+                    {selectedPdf && (
+                        <div className="fixed inset-0 z-40 bg-black/90 backdrop-blur-sm flex flex-col">
+                            {/* Header Viewer */}
+                            <div className="p-6 border-b border-white/10 flex items-center justify-between">
+                                <button 
+                                    onClick={() => setSelectedPdf(null)}
+                                    className="p-3 bg-gray-800/50 hover:bg-gray-700 rounded-2xl backdrop-blur-sm transition-all"
+                                >
+                                    <i className="fas fa-times text-2xl"></i>
+                                </button>
+                                <span className="text-xl font-bold bg-blue-500/20 px-4 py-2 rounded-2xl">
+                                    {currentPage} / {totalPages}
+                                </span>
+                                <div className="w-12"></div>
+                            </div>
+
+                            {/* Canvas */}
+                            <div className="flex-1 flex items-center justify-center p-4 overflow-hidden">
+                                <canvas ref={canvasRef} className="pdf-canvas block max-w-full max-h-full" />
+                            </div>
+
+                            {/* Bottom Controls */}
+                            <div className="bottom-nav p-4 border-t border-white/10">
+                                <div className="flex items-center justify-center space-x-6">
+                                    <button 
+                                        onClick={() => setCurrentPage(1)}
+                                        className="p-4 bg-gray-800/50 hover:bg-gray-700 rounded-3xl transition-all"
+                                    >
+                                        <i className="fas fa-angle-double-left text-xl"></i>
+                                    </button>
+                                    <button 
+                                        onClick={() => setCurrentPage(p => Math.max(1, p-1))}
+                                        className="w-16 h-16 bg-gradient-to-r from-blue-500 to-purple-600 rounded-3xl shadow-2xl hover:scale-110 font-bold text-2xl"
+                                    >
+                                        ←
+                                    </button>
+                                    <button 
+                                        onClick={() => setCurrentPage(p => Math.min(totalPages, p+1))}
+                                        className="w-16 h-16 bg-gradient-to-r from-purple-600 to-blue-500 rounded-3xl shadow-2xl hover:scale-110 font-bold text-2xl"
+                                    >
+                                        →
+                                    </button>
+                                    <button 
+                                        onClick={() => setCurrentPage(totalPages)}
+                                        className="p-4 bg-gray-800/50 hover:bg-gray-700 rounded-3xl transition-all"
+                                    >
+                                        <i className="fas fa-angle-double-right text-xl"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Permissions Info */}
+                    {!permissions && pdfFiles.length === 0 && (
+                        <div className="fixed bottom-24 left-6 right-6 bg-yellow-500/20 border border-yellow-500/50 rounded-2xl p-4 backdrop-blur-sm text-center">
+                            <i className="fas fa-info-circle text-yellow-400 text-xl mb-2 block"></i>
+                            <p className="text-sm font-medium text-yellow-100">Toque "Escanear" e permita acesso aos arquivos para ver todos os PDFs</p>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('app'));
+    </script>
+</head>
+</body>
+</html>
